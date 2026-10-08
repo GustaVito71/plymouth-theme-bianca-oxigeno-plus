@@ -1,0 +1,9 @@
+[Plymouth Theme]
+Name=Bianca Oxigeno Plus
+Description=Theme based on MIB Ossigeno with progress bar & white spinning circle (revised script) - GHReyes71@gmail.com
+ModuleName=script
+ShowDelay=0
+
+[script]
+ImageDir=/usr/share/plymouth/themes/bianca-oxigeno-plus
+ScriptFile=/usr/share/plymouth/themes/bianca-oxigeno-plus/bianca-oxigeno-plus.script

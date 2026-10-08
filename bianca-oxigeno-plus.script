@@ -1,0 +1,578 @@
+#  bianca-oxigeno-plus - boot splash usando el plugin "script" de Plymouth
+#  Fecha: 07/10/2026 (revisión de bianca-oxygen, 15/03/2024)
+#
+#  Copyright © 2024-2026 Gustavo Pérez Reyes <ghreyes71@gmail.com>
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 3 of the License, or (at your
+#  option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, see <https://www.gnu.org/licenses/>.
+#
+#  Basado en MIB Ossigeno Ultimate Plymouth de
+#              Emanuele <https://www.gnome-look.org/u/emanueleeeee>
+#  La lógica de fsck deriva del tema ubuntu-logo de Plymouth.
+#
+#  NOTA: en el lenguaje de Plymouth, "fun" es una sentencia que se ejecuta en
+#  orden; una función debe estar definida ANTES de registrarla como callback.
+
+
+#------------------------------- Constantes ------------------------------------
+LOGO_CENTER_PCT.x = 0.5;    # centro del logo, en % del ancho de pantalla
+LOGO_CENTER_PCT.y = 0.45;   # centro del logo, en % del alto (menor = más arriba)
+LOGO_SIZE_PCT     = 0.4;    # lado del logo, en % de la dimensión menor de pantalla
+ANIM_SCALE        = 1.2;    # tamaño del anillo giratorio respecto del logo
+ANIM_FRAMES       = 32;     # frames por vuelta. Plymouth refresca a ~50 Hz, así que
+                            # la velocidad es ≈ 50 / ANIM_FRAMES vueltas por segundo
+PROGRESS_Y_PCT    = 0.90;   # centro vertical de la barra de progreso, en % del alto
+
+TEXT_COLOUR.red   = 1.0;    # color de todos los textos (0.0 – 1.0 por canal)
+TEXT_COLOUR.green = 1.0;
+TEXT_COLOUR.blue  = 1.0;
+
+DEFAULT_FSCK_STRING = "Checking disk %1$d of %2$d (%3$d %% complete)";
+
+# Profundidad (Z) de cada capa
+Z_BACKGROUND   = -10;
+Z_PROGRESS_BOX = 0;
+Z_PROGRESS_BAR = 1;
+Z_LOGO         = 50;
+Z_ANIM         = 60;
+Z_FSCK_LABEL   = 70;
+Z_DIALOG       = 10000;
+Z_MESSAGE      = 10000;
+
+
+#------------------------------- Pantalla y utilidades -------------------------
+# Con varios monitores, Plymouth dibuja todos los sprites en un lienzo común de
+# (ancho máximo x alto máximo), con origen en (0,0). Cada monitor muestra una
+# zona centrada de ese lienzo, que empieza en (Window.GetX(i), Window.GetY(i)).
+#   - Sin índice, Window.GetWidth()/GetHeight() devuelven el tamaño MÁXIMO y
+#     Window.GetX()/GetY() el desplazamiento MÁXIMO (el del monitor más chico).
+#   - "canvas" es el lienzo completo: ahí va el fondo.
+#   - "screen" es la zona visible en TODOS los monitores (la del más chico):
+#     ahí se ubican logo, textos y barra para que queden centrados en todos.
+canvas.width  = Window.GetWidth();
+canvas.height = Window.GetHeight();
+
+fun MinWindowWidth () {
+    local.i = 0;
+    local.width = Window.GetWidth(0);
+    while (Window.GetWidth(i)) {
+        width = Math.Min(width, Window.GetWidth(i));
+        i++;
+    }
+    return width;
+}
+
+fun MinWindowHeight () {
+    local.i = 0;
+    local.height = Window.GetHeight(0);
+    while (Window.GetHeight(i)) {
+        height = Math.Min(height, Window.GetHeight(i));
+        i++;
+    }
+    return height;
+}
+
+screen.x      = Window.GetX();
+screen.y      = Window.GetY();
+screen.width  = MinWindowWidth();
+screen.height = MinWindowHeight();
+
+is_suspend = (Plymouth.GetMode() == "suspend" || Plymouth.GetMode() == "resume");
+status = "normal";          # "normal" | "password"
+
+fun TextImage (text) {
+    return Image.Text(text, TEXT_COLOUR.red, TEXT_COLOUR.green, TEXT_COLOUR.blue);
+}
+
+# X para centrar horizontalmente una imagen en la pantalla
+fun CenteredX (image) {
+    return screen.x + (screen.width - image.GetWidth()) / 2;
+}
+
+
+#------------------------------- Fondo -----------------------------------------
+Window.SetBackgroundTopColor(0.234, 0.43, 0.705);
+Window.SetBackgroundBottomColor(0.16, 0.25, 0.44);
+
+if (is_suspend)
+    background.file = "suspend.png";
+else
+    background.file = "background.png";
+
+background.sprite = Sprite(Image(background.file).Scale(canvas.width, canvas.height));
+background.sprite.SetPosition(0, 0, Z_BACKGROUND);
+
+
+#------------------------------- Logo y animación ------------------------------
+# Las rotaciones se calculan una sola vez y quedan en caché.
+# Image.Rotate conserva las dimensiones, así que no hace falta reescalar.
+fun RotatedImage (index) {
+    index = Math.Int(index);
+    if (!anim.cache[index])
+        anim.cache[index] = anim.base.Rotate(Math.Pi * 2 * index / ANIM_FRAMES);
+    return anim.cache[index];
+}
+
+if (!is_suspend) {
+    logo.image = Image("logo.png");
+    logo_scale = Math.Min(screen.width, screen.height) * LOGO_SIZE_PCT / logo.image.GetWidth();
+    logo.image = logo.image.Scale(logo.image.GetWidth() * logo_scale, logo.image.GetHeight() * logo_scale);
+
+    logo.center.x = screen.x + screen.width  * LOGO_CENTER_PCT.x;
+    logo.center.y = screen.y + screen.height * LOGO_CENTER_PCT.y;
+    logo.y = logo.center.y - logo.image.GetHeight() / 2;
+
+    logo.sprite = Sprite(logo.image);
+    logo.sprite.SetPosition(logo.center.x - logo.image.GetWidth() / 2, logo.y, Z_LOGO);
+
+    # Anillo giratorio, centrado sobre el logo
+    anim.base = Image("animation.png").Scale(logo.image.GetWidth() * ANIM_SCALE, logo.image.GetHeight() * ANIM_SCALE);
+    anim.index = 0;
+    anim.sprite = Sprite(RotatedImage(0));
+    anim.sprite.SetPosition(logo.center.x - anim.base.GetWidth() / 2, logo.center.y - anim.base.GetHeight() / 2, Z_ANIM);
+}
+
+fun refresh_callback () {
+    if (status == "normal") {
+        anim.index = (anim.index + 1) % ANIM_FRAMES;
+        anim.sprite.SetImage(RotatedImage(anim.index));
+    }
+}
+
+if (!is_suspend)
+    Plymouth.SetRefreshFunction(refresh_callback);
+
+
+#------------------------------- Barra de progreso -----------------------------
+progress_box.image = Image("progress_box.png");
+progress_box.y = screen.y + screen.height * PROGRESS_Y_PCT - progress_box.image.GetHeight() / 2;
+progress_box.sprite = Sprite(progress_box.image);
+progress_box.sprite.SetPosition(CenteredX(progress_box.image), progress_box.y, Z_PROGRESS_BOX);
+
+progress_bar.original_image = Image("progress_bar.png");
+progress_bar.width = 0;
+progress_bar.sprite = Sprite();
+progress_bar.sprite.SetPosition(CenteredX(progress_bar.original_image), progress_box.y + (progress_box.image.GetHeight() - progress_bar.original_image.GetHeight()) / 2, Z_PROGRESS_BAR);
+
+fun progress_callback (duration, progress) {
+    local.width = Math.Int(progress_bar.original_image.GetWidth() * progress);
+    # Solo se reescala cuando cambia el ancho en píxeles
+    if (width > 0 && width != progress_bar.width) {
+        progress_bar.width = width;
+        progress_bar.sprite.SetImage(progress_bar.original_image.Scale(width, progress_bar.original_image.GetHeight()));
+    }
+}
+
+Plymouth.SetBootProgressFunction(progress_callback);
+
+
+#------------------------------- Diálogo de contraseña -------------------------
+fun dialog_setup () {
+    local.box;
+    local.lock;
+    local.entry;
+
+    box.image   = Image("box.png");
+    lock.image  = Image("lock.png");
+    entry.image = Image("entry.png");
+
+    box.x = CenteredX(box.image);
+    box.y = screen.y + (screen.height - box.image.GetHeight()) / 2;
+    box.z = Z_DIALOG;
+    box.sprite = Sprite(box.image);
+    box.sprite.SetPosition(box.x, box.y, box.z);
+
+    lock.x = box.x + (box.image.GetWidth() - lock.image.GetWidth() - entry.image.GetWidth()) / 2;
+    lock.y = box.y + (box.image.GetHeight() - lock.image.GetHeight()) / 2;
+    lock.z = box.z + 1;
+    lock.sprite = Sprite(lock.image);
+    lock.sprite.SetPosition(lock.x, lock.y, lock.z);
+
+    entry.x = lock.x + lock.image.GetWidth();
+    entry.y = box.y + (box.image.GetHeight() - entry.image.GetHeight()) / 2;
+    entry.z = box.z + 1;
+    entry.sprite = Sprite(entry.image);
+    entry.sprite.SetPosition(entry.x, entry.y, entry.z);
+
+    local.prompt_sprite = Sprite();
+    prompt_sprite.SetPosition(box.x, box.y - 20, box.z);
+
+    global.dialog.box = box;
+    global.dialog.lock = lock;
+    global.dialog.entry = entry;
+    global.dialog.bullet_image = Image("bullet.png");
+    global.dialog.prompt_sprite = prompt_sprite;
+}
+
+fun dialog_opacity (opacity) {
+    dialog.box.sprite.SetOpacity(opacity);
+    dialog.lock.sprite.SetOpacity(opacity);
+    dialog.entry.sprite.SetOpacity(opacity);
+    dialog.prompt_sprite.SetOpacity(opacity);
+    for (index = 0; dialog.bullet[index]; index++)
+        dialog.bullet[index].sprite.SetOpacity(opacity);
+}
+
+fun display_normal_callback () {
+    global.status = "normal";
+    dialog_opacity(0);
+    if (anim.sprite)
+        anim.sprite.SetOpacity(1);
+}
+
+fun display_password_callback (prompt, bullets) {
+    global.status = "password";
+    dialog_opacity(1);
+    if (anim.sprite)
+        anim.sprite.SetOpacity(0);
+
+    dialog.prompt_sprite.SetImage(TextImage(prompt));
+
+    for (index = 0; dialog.bullet[index] || index < bullets; index++) {
+        if (!dialog.bullet[index]) {
+            dialog.bullet[index].sprite = Sprite(dialog.bullet_image);
+            dialog.bullet[index].sprite.SetPosition(dialog.entry.x + index * dialog.bullet_image.GetWidth(), dialog.entry.y + (dialog.entry.image.GetHeight() - dialog.bullet_image.GetHeight()) / 2, dialog.entry.z + 1);
+        }
+        if (index < bullets)
+            dialog.bullet[index].sprite.SetOpacity(1);
+        else
+            dialog.bullet[index].sprite.SetOpacity(0);
+    }
+}
+
+# Se crea al inicio para que las imágenes queden en memoria antes de que se
+# desmonte el initrd (por si /usr todavía no está montado).
+dialog_setup();
+dialog_opacity(0);
+Plymouth.SetDisplayNormalFunction(display_normal_callback);
+Plymouth.SetDisplayPasswordFunction(display_password_callback);
+
+
+#------------------------------- Funciones de texto ----------------------------
+# strstr(): posición de "substring" dentro de "string", o NULL
+fun StringString (string, substring) {
+    local.start = 0;
+    while (String(string).CharAt(start)) {
+        local.walk = 0;
+        while (String(substring).CharAt(walk) == String(string).CharAt(start + walk)) {
+            walk++;
+            if (!String(substring).CharAt(walk)) return start;
+        }
+        start++;
+    }
+    return NULL;
+}
+
+fun StringLength (string) {
+    local.index = 0;
+    while (String(string).CharAt(index)) index++;
+    return index;
+}
+
+# Copia desde "beginning" hasta "end" inclusive (end == NULL: hasta el final)
+fun StringCopy (source, beginning, end) {
+    local.destination = "";
+    for (local.index = beginning; ((end == NULL) || (index <= end)) && String(source).CharAt(index); index++)
+        destination += String(source).CharAt(index);
+    return destination;
+}
+
+fun StringReplace (source, pattern, replacement) {
+    local.found = StringString(source, pattern);
+    if (found == NULL)
+        return source;
+    return StringCopy(source, 0, found - 1) + replacement + StringCopy(source, found + StringLength(pattern), NULL);
+}
+
+# Elimina todo hasta "prefix" inclusive, si aparece en el texto
+fun StripPrefix (text, prefix) {
+    local.pos = StringString(text, prefix);
+    if (pos == NULL)
+        return text;
+    return StringCopy(text, pos + StringLength(prefix), NULL);
+}
+
+# Plymouth no tiene conversión de texto a número: sirve solo para 0..100.
+# Devuelve -1 si no es un entero en ese rango.
+fun StringToInteger (str) {
+    for (local.i = 0; i <= 100; i++)
+        if (i + "" == str) return i;
+    return -1;
+}
+
+
+#------------------------------- Posición de los textos ------------------------
+# Texto de calibración con ascendentes y descendentes, para que las líneas
+# no se muevan según la altura de cada mensaje.
+first_line_height = TextImage("AfpqtM").GetHeight();
+fake_label_height = TextImage("This is a fake message").GetHeight();
+
+# Primera línea de texto: a mitad de camino entre el logo y la barra de
+# progreso, sin pasarse del borde inferior (pantallas de 640x480 u 800x600).
+fun TextYOffset () {
+    local.y = screen.y + screen.height * 0.75;     # sin logo (modo suspend)
+    if (logo.image)
+        y = (logo.y + logo.image.GetHeight() + progress_box.y) / 2;
+
+    local.max_y = screen.y + screen.height - first_line_height * 2.5;
+    if (y > max_y)
+        y = max_y;
+    return y;
+}
+
+top_of_the_text = TextYOffset();
+
+
+#------------------------------- Mensajes --------------------------------------
+# Línea 0: mensaje común. Línea 1: mensaje de acción ("keys:...").
+# Se invoca, por ejemplo, con: plymouth message --text="hola"
+message_sprite[0] = Sprite();
+message_sprite[1] = Sprite();
+
+fun message_callback (text) {
+    local.line = 0;
+    if (StringString(text, "keys:") != NULL)
+        line = 1;
+
+    text = StripPrefix(text, "keys:");
+    # Sin soporte de i18n: se descarta el prefijo de systemd-fsckd
+    text = StripPrefix(text, "fsckd-cancel-msg:");
+
+    local.image = TextImage(text);
+    local.y = top_of_the_text;
+    if (line == 1)
+        y = top_of_the_text + first_line_height * 3;
+
+    message_sprite[line].SetImage(image);
+    message_sprite[line].SetPosition(CenteredX(image), y, Z_MESSAGE);
+
+    # La línea de acción se oculta mientras se pide la contraseña
+    if (line == 1 && status == "password")
+        message_sprite[line].SetOpacity(0);
+    else
+        message_sprite[line].SetOpacity(1);
+}
+
+Plymouth.SetMessageFunction(message_callback);
+
+
+#------------------------------- FSCK: etiqueta --------------------------------
+fsck_label_sprite = Sprite();
+
+fun show_fsck_label (text) {
+    local.image = TextImage(text);
+    fsck_label_sprite.SetImage(image);
+    fsck_label_sprite.SetPosition(CenteredX(image), top_of_the_text + fake_label_height * 1.5, Z_FSCK_LABEL);
+    fsck_label_sprite.SetOpacity(1);
+}
+
+fun hide_fsck_label () {
+    fsck_label_sprite.SetOpacity(0);
+    # Libera el lugar para que otro chequeo pueda ocuparlo
+    global.progress_label.is_available = 1;
+    global.progress_label.device = "";
+}
+
+
+#------------------------------- FSCK: contador --------------------------------
+fun init_fsck_count () {
+    global.counter.total = 0;       # chequeos fsck en este ciclo
+    global.counter.current = 1;     # chequeos ya hechos + el actual
+}
+
+fun clear_fsck_count () {
+    global.counter = NULL;
+    init_fsck_count();
+}
+
+
+#------------------------------- FSCK: cola ------------------------------------
+fun init_queue () {
+    global.fsck_queue.counter = 0;
+    global.fsck_queue.biggest_item = 0;
+}
+
+fun clear_queue () {
+    global.fsck_queue = NULL;
+    init_queue();
+}
+
+fun is_queue_empty () {
+    return (global.fsck_queue.counter == 0);
+}
+
+# Índice del dispositivo en la cola, o -1
+fun queue_look_up_by_device (device) {
+    for (local.i = 0; i <= global.fsck_queue.biggest_item; i++)
+        if (global.fsck_queue[i] && global.fsck_queue[i].device == device)
+            return i;
+    return -1;
+}
+
+fun add_fsck_to_queue (device, progress) {
+    # Primer lugar libre
+    local.i = 0;
+    while (global.fsck_queue[i].device) i++;
+
+    global.fsck_queue[i].device = device;
+    global.fsck_queue[i].progress = progress;
+    global.fsck_queue.counter++;
+    if (i > global.fsck_queue.biggest_item)
+        global.fsck_queue.biggest_item = i;
+}
+
+fun remove_fsck_from_queue (index) {
+    global.fsck_queue[index].device = NULL;
+    global.fsck_queue[index].progress = NULL;
+    global.fsck_queue.counter--;
+}
+
+fun update_progress_in_queue (index, device, progress) {
+    if (progress >= 100) {
+        remove_fsck_from_queue(index);
+        return;
+    }
+    global.fsck_queue[index].device = device;
+    global.fsck_queue[index].progress = progress;
+}
+
+
+#------------------------------- FSCK: etiqueta de progreso --------------------
+fun init_progress_label (device, status_string) {
+    global.progress_label.is_available = 0;
+    global.progress_label.progress = 0;
+    global.progress_label.device = device;
+    global.progress_label.status_string = status_string;
+}
+
+fun on_fsck_completed () {
+    global.counter.current++;
+    # Si no queda nada pendiente, se reinicia todo
+    if (global.progress_label.is_available && is_queue_empty()) {
+        clear_queue();
+        clear_fsck_count();
+    }
+}
+
+# progress == NULL: solo refresca el texto (cambió counter.total)
+fun update_progress_label (progress) {
+    if (progress != NULL) {
+        global.progress_label.progress = progress;
+        if (progress >= 100) {
+            hide_fsck_label();
+            on_fsck_completed();
+            return;
+        }
+    }
+
+    # FIXME: la lógica de cola debería estar en mountall en vez de reemplazar
+    # cadenas para soportar textos localizados.
+    local.text = StringReplace(global.progress_label.status_string, "%1$d", global.counter.current);
+    text = StringReplace(text, "%2$d", global.counter.total);
+    text = StringReplace(text, "%3$d", global.progress_label.progress);
+    text = StringReplace(text, "%%", "%");
+
+    show_fsck_label(text);
+}
+
+# Muestra el progreso del dispositivo o lo encola si la etiqueta está ocupada
+fun fsck_check (device, progress, status_string) {
+    # Primer chequeo
+    if (!global.progress_label) {
+        global.counter.total++;
+        init_progress_label(device, status_string);
+        update_progress_label(progress);
+        return;
+    }
+
+    if (global.progress_label.device == device) {
+        update_progress_label(progress);
+        return;
+    }
+
+    local.queue_index = queue_look_up_by_device(device);
+
+    if (global.progress_label.is_available) {
+        # La etiqueta está libre: el dispositivo pasa de la cola a la etiqueta
+        if (queue_index >= 0)
+            remove_fsck_from_queue(queue_index);
+        else
+            global.counter.total++;
+
+        init_progress_label(device, status_string);
+        update_progress_label(progress);
+    }
+    else if (queue_index >= 0) {
+        update_progress_in_queue(queue_index, device, progress);
+    }
+    else {
+        add_fsck_to_queue(device, progress);
+        global.counter.total++;
+        update_progress_label(NULL);
+    }
+}
+
+
+#------------------------------- Update status ---------------------------------
+# Recibe lo enviado con "plymouth update --status=...". Formatos soportados:
+#   fsck:<dispositivo>:<progreso>[:<texto>]          (p. ej. fsck:sda1:40)
+#   fsckd:<n_dispositivos>:<progreso>:<texto>        (systemd-fsckd)
+fun update_status_callback (update) {
+    if (!update) return;
+
+    # Separa los campos por ":"
+    local.fields[0] = "";
+    local.n = 0;
+    local.i = 0;
+    local.c = String(update).CharAt(0);
+    while (c != "") {
+        if (c == ":") {
+            n++;
+            fields[n] = "";
+        }
+        else
+            fields[n] += c;
+        i++;
+        c = String(update).CharAt(i);
+    }
+
+    if (fields[0] == "fsck" && n >= 2 && fields[1] != "" && fields[2] != "") {
+        local.status_string = fields[3];
+        if (!status_string)
+            status_string = DEFAULT_FSCK_STRING;
+
+        if (!global.fsck_queue)
+            init_queue();
+        if (!global.counter)
+            init_fsck_count();
+
+        fsck_check(fields[1], StringToInteger(fields[2]), status_string);
+    }
+    else if (fields[0] == "fsckd") {
+        if (StringToInteger(fields[1]) > 0 && fields[3])
+            show_fsck_label(fields[3]);
+        else
+            fsck_label_sprite.SetOpacity(0);
+    }
+}
+
+Plymouth.SetUpdateStatusFunction(update_status_callback);
+
+
+#------------------------------- Salida ----------------------------------------
+fun quit_callback () {
+    if (anim.sprite)
+        anim.sprite.SetOpacity(0);
+}
+
+Plymouth.SetQuitFunction(quit_callback);
